@@ -1,7 +1,7 @@
 (() => {
 "use strict";
 
-const BOOKING_ENDPOINT = "https://script.google.com/macros/s/AKfycbwhkUxqA_g8QVPBF5asSxDhShY2jx85zSa9JUctePbj4VoXFWYQs4OtVCjSO_kCb3ZK6A/exec";
+const BOOKING_ENDPOINT = "https://script.google.com/macros/s/AKfycbxx2rol370xaGj9Uj2S5W1LMLaRAFPyfg_5fls18n__e7_qYo1RfGbqv8nqrtr9ZRDRXg/exec";
 const TIMEZONE = "Australia/Sydney";
 
 const BUSINESS_SLOTS = [
