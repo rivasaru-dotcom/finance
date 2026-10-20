@@ -1,322 +1,481 @@
 "use strict";
 
-const CALENDAR_ID =
-  "2bbe82282fdfe19aac198e1b42ee6237c02663bd3c6cf37ea77bab8c01d8cdcb@group.calendar.google.com";
+const BOOKING_CONFIG = {
+  endpoint: "https://script.google.com/macros/s/AKfycbyCipXv-ZtOY4QxQEh6ai7mrJ_GEWaDpejL9aeIzJhC4kTUzVuwwsl8dBwcVmMwHJ3Kdw/exec",
+  timezone: "Australia/Sydney",
+  durationMinutes: 30,
+  slots: [
+    "9:00 AM",
+    "9:30 AM",
+    "10:30 AM",
+    "11:00 AM",
+    "1:00 PM",
+    "2:30 PM",
+    "3:30 PM",
+    "4:00 PM"
+  ]
+};
 
-const BUSINESS_TIMEZONE = "Australia/Sydney";
-const APPOINTMENT_DURATION_MINUTES = 30;
+(() => {
+  const form =
+    document.querySelector("#appointmentForm") ||
+    document.querySelector("#bookingForm");
 
-const BUSINESS_SLOTS = [
-  "9:00 AM",
-  "9:30 AM",
-  "10:30 AM",
-  "11:00 AM",
-  "1:00 PM",
-  "2:30 PM",
-  "3:30 PM",
-  "4:00 PM"
-];
-
-// GET: health check and availability
-function doGet(e) {
-  const params = e && e.parameter ? e.parameter : {};
-
-  if (params.action === "availability") {
-    return getAvailability(params.date || "");
+  if (!form) {
+    console.error(
+      "Appointment form not found. Add id='appointmentForm' to your form."
+    );
+    return;
   }
 
-  return jsonResponse({
-    success: true,
-    message: "SILAM Finance booking service is running."
-  });
-}
+  const dateInput =
+    form.querySelector('[name="isoDate"]') ||
+    form.querySelector("#appointmentDate") ||
+    form.querySelector("#bookingDate");
 
-// POST: create a booking
-function doPost(e) {
-  const lock = LockService.getScriptLock();
-  let lockAcquired = false;
+  const timeSelect =
+    form.querySelector('[name="time"]') ||
+    form.querySelector("#appointmentTime") ||
+    form.querySelector("#bookingTime");
 
-  try {
-    const data = getRequestData(e);
+  const submitButton =
+    form.querySelector('[type="submit"]');
 
-    const requiredFields = [
+  const statusElement =
+    document.querySelector("#appointmentStatus") ||
+    document.querySelector("#bookingStatus") ||
+    document.querySelector("#formMessage");
+
+  let availabilityRequest = 0;
+  let bookingInProgress = false;
+  let bookingTimeout = null;
+
+  // Set this to the deployed /exec URL in BOOKING_CONFIG.
+  function getEndpoint() {
+    const endpoint = BOOKING_CONFIG.endpoint.trim();
+
+    if (
+      !endpoint.startsWith("https://script.google.com/") ||
+      !endpoint.endsWith("/exec")
+    ) {
+      throw new Error(
+        "Add your deployed Google Apps Script /exec URL to appointment.js."
+      );
+    }
+
+    return endpoint;
+  }
+
+  function showStatus(message, type = "info") {
+    if (!statusElement) {
+      console.log(message);
+      return;
+    }
+
+    statusElement.textContent = message;
+    statusElement.setAttribute("role", "status");
+    statusElement.setAttribute("aria-live", "polite");
+
+    statusElement.classList.remove(
+      "success",
+      "error",
+      "info"
+    );
+    statusElement.classList.add(type);
+
+    statusElement.style.color =
+      type === "error" ? "#b42318" :
+      type === "success" ? "#237a57" :
+      "";
+  }
+
+  function setSubmitting(isSubmitting) {
+    if (submitButton) {
+      submitButton.disabled = isSubmitting;
+      submitButton.setAttribute(
+        "aria-busy",
+        String(isSubmitting)
+      );
+    }
+
+    if (isSubmitting) {
+      form.setAttribute("aria-busy", "true");
+    } else {
+      form.removeAttribute("aria-busy");
+    }
+  }
+
+  function localDateString(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+
+    return `${year}-${month}-${day}`;
+  }
+
+  function configureDateInput() {
+    if (!dateInput) {
+      console.error("Appointment date input not found.");
+      return;
+    }
+
+    // Use the visitor's current date as a basic minimum.
+    // The backend independently validates the Sydney appointment time.
+    dateInput.min = localDateString(new Date());
+  }
+
+  function setTimeOptions(times, placeholder) {
+    if (!timeSelect) return;
+
+    timeSelect.replaceChildren();
+
+    timeSelect.add(new Option(placeholder, ""));
+
+    times.forEach((time) => {
+      if (BOOKING_CONFIG.slots.includes(time)) {
+        timeSelect.add(new Option(time, time));
+      }
+    });
+
+    timeSelect.disabled = times.length === 0;
+  }
+
+  // JSONP is used because a normal cross-origin fetch to Apps Script
+  // may fail due to redirects or CORS.
+  function loadAvailability(date) {
+    if (!dateInput || !timeSelect) return;
+
+    const requestId = ++availabilityRequest;
+
+    if (!date) {
+      setTimeOptions([], "Choose a date first");
+      showStatus("");
+      return;
+    }
+
+    setTimeOptions([], "Loading available times...");
+    timeSelect.disabled = true;
+
+    showStatus("Checking available appointments...");
+
+    let script;
+    let timeout;
+
+    const callbackName =
+      "__silamAvailability_" +
+      Date.now() + "_" +
+      Math.random().toString(36).slice(2);
+
+    let finished = false;
+
+    function cleanup() {
+      if (finished) return;
+      finished = true;
+
+      clearTimeout(timeout);
+
+      if (script) script.remove();
+
+      try {
+        delete window[callbackName];
+      } catch (_) {
+        window[callbackName] = undefined;
+      }
+    }
+
+    window[callbackName] = function(result) {
+      cleanup();
+
+      if (requestId !== availabilityRequest) return;
+
+      if (!result || result.success !== true) {
+        setTimeOptions([], "Availability unavailable");
+        showStatus(
+          result && result.message
+            ? result.message
+            : "Could not retrieve availability.",
+          "error"
+        );
+        return;
+      }
+
+      const available = Array.isArray(result.available)
+        ? result.available.filter((time) =>
+            BOOKING_CONFIG.slots.includes(time)
+          )
+        : [];
+
+      if (available.length === 0) {
+        setTimeOptions([], "No times available");
+        showStatus(
+          "There are no available appointments on this date.",
+          "info"
+        );
+        return;
+      }
+
+      setTimeOptions(available, "Select an appointment time");
+      showStatus("Choose an available appointment time.");
+    };
+
+    try {
+      const url = new URL(getEndpoint());
+
+      url.searchParams.set("action", "availability");
+      url.searchParams.set("date", date);
+      url.searchParams.set("callback", callbackName);
+
+      script = document.createElement("script");
+      script.src = url.toString();
+      script.async = true;
+
+      script.onerror = function() {
+        cleanup();
+
+        if (requestId !== availabilityRequest) return;
+
+        setTimeOptions([], "Unable to load times");
+
+        showStatus(
+          "Availability could not be loaded. Check your Apps Script deployment and JSONP setup.",
+          "error"
+        );
+      };
+
+      timeout = setTimeout(() => {
+        cleanup();
+
+        if (requestId !== availabilityRequest) return;
+
+        setTimeOptions([], "Request timed out");
+
+        showStatus(
+          "The availability request timed out. Please try again.",
+          "error"
+        );
+      }, 15000);
+
+      document.head.appendChild(script);
+
+    } catch (error) {
+      cleanup();
+      setTimeOptions([], "Unable to load times");
+      showStatus(error.message, "error");
+    }
+  }
+
+  // Receive the result returned by the Apps Script HTML response.
+  function handleBookingMessage(event) {
+    if (!bookingInProgress) return;
+
+    if (
+      !bookingFrame ||
+      event.source !== bookingFrame.contentWindow
+    ) {
+      return;
+    }
+
+    if (
+      !event.data ||
+      event.data.type !== "silam-booking-result"
+    ) {
+      return;
+    }
+
+    clearTimeout(bookingTimeout);
+    bookingInProgress = false;
+    setSubmitting(false);
+
+    const result = event.data.payload;
+
+    if (result && result.success === true) {
+      showStatus(
+        "Your appointment has been booked successfully. Please check your email for the invitation.",
+        "success"
+      );
+
+      form.reset();
+      configureDateInput();
+      setTimeOptions([], "Choose a date first");
+
+      return;
+    }
+
+    showStatus(
+      result && result.message
+        ? result.message
+        : "Your appointment could not be confirmed. Check your calendar before trying again.",
+      "error"
+    );
+
+    if (dateInput && dateInput.value) {
+      loadAvailability(dateInput.value);
+    }
+  }
+
+  let bookingFrame = null;
+
+  function createBookingFrame() {
+    bookingFrame = document.createElement("iframe");
+    bookingFrame.name =
+      "silamBookingFrame_" + Math.random().toString(36).slice(2);
+
+    bookingFrame.title = "Appointment booking response";
+    bookingFrame.hidden = true;
+
+    document.body.appendChild(bookingFrame);
+
+    window.addEventListener("message", handleBookingMessage);
+  }
+
+  function submitBooking(event) {
+    event.preventDefault();
+
+    if (bookingInProgress) return;
+
+    if (!form.reportValidity()) return;
+
+    if (!dateInput || !timeSelect || !timeSelect.value) {
+      showStatus(
+        "Please select an available appointment date and time.",
+        "error"
+      );
+      return;
+    }
+
+    if (!BOOKING_CONFIG.slots.includes(timeSelect.value)) {
+      showStatus("Please choose a valid appointment time.", "error");
+      return;
+    }
+
+    let endpoint;
+
+    try {
+      endpoint = getEndpoint();
+    } catch (error) {
+      showStatus(error.message, "error");
+      return;
+    }
+
+    const formData = new FormData(form);
+    const values = {};
+
+    [
       "firstName",
       "lastName",
       "email",
       "phone",
+      "reason",
+      "message"
+    ].forEach((key) => {
+      const value = formData.get(key);
+      values[key] = value == null ? "" : String(value).trim();
+    });
+
+    values.isoDate = dateInput.value;
+    values.time = timeSelect.value;
+
+    const required = [
+      "firstName",
+      "lastName",
+      "email",
+      "phone",
+      "reason",
       "isoDate",
-      "time",
-      "reason"
+      "time"
     ];
 
-    for (const field of requiredFields) {
-      if (
-        typeof data[field] !== "string" ||
-        !data[field].trim()
-      ) {
-        throw new Error("Please complete all required fields.");
-      }
+    if (required.some((key) => !values[key])) {
+      showStatus("Please complete all required fields.", "error");
+      return;
     }
 
-    const firstName = data.firstName.trim();
-    const lastName = data.lastName.trim();
-    const email = data.email.trim().toLowerCase();
-    const phone = data.phone.trim();
-    const reason = data.reason.trim();
-    const message = String(data.message || "").trim();
-
-    if (
-      firstName.length > 100 ||
-      lastName.length > 100 ||
-      phone.length > 40 ||
-      reason.length > 200 ||
-      message.length > 1000
-    ) {
-      throw new Error("One or more fields exceed the allowed length.");
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(values.email)) {
+      showStatus("Please enter a valid email address.", "error");
+      return;
     }
 
-    if (
-      email.length > 254 ||
-      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
-    ) {
-      throw new Error("Please enter a valid email address.");
-    }
+    if (!bookingFrame) createBookingFrame();
 
-    if (!BUSINESS_SLOTS.includes(data.time)) {
-      throw new Error("Please select a valid appointment time.");
-    }
+    const hiddenForm = document.createElement("form");
 
-    const calendar = getBookingCalendar();
+    hiddenForm.method = "POST";
+    hiddenForm.action = endpoint;
+    hiddenForm.target = bookingFrame.name;
+    hiddenForm.hidden = true;
 
-    if (!lock.tryLock(15000)) {
-      throw new Error(
-        "The booking service is busy. Please try again shortly."
+    const payload = {
+      ...values,
+      _iframe: "1"
+    };
+
+    Object.entries(payload).forEach(([name, value]) => {
+      const input = document.createElement("input");
+
+      input.type = "hidden";
+      input.name = name;
+      input.value = value;
+
+      hiddenForm.appendChild(input);
+    });
+
+    document.body.appendChild(hiddenForm);
+
+    bookingInProgress = true;
+    setSubmitting(true);
+
+    showStatus("Submitting your appointment request...");
+
+    bookingTimeout = setTimeout(() => {
+      if (!bookingInProgress) return;
+
+      bookingInProgress = false;
+      setSubmitting(false);
+
+      showStatus(
+        "We couldn't confirm the booking response. Check Google Calendar before attempting to book again.",
+        "error"
+      );
+
+      hiddenForm.remove();
+    }, 30000);
+
+    try {
+      hiddenForm.submit();
+    } catch (error) {
+      clearTimeout(bookingTimeout);
+      bookingInProgress = false;
+      setSubmitting(false);
+
+      showStatus(
+        "Unable to submit the appointment. Please try again.",
+        "error"
       );
     }
 
-    lockAcquired = true;
+    // Keep the temporary form briefly for browser compatibility.
+    setTimeout(() => hiddenForm.remove(), 1000);
+  }
 
-    const startTime = parseAppointmentDate(
-      data.isoDate,
-      data.time
+  if (!dateInput || !timeSelect) {
+    console.error(
+      "Please add a date input and time select with names isoDate and time."
     );
-
-    const endTime = new Date(
-      startTime.getTime() +
-      APPOINTMENT_DURATION_MINUTES * 60 * 1000
-    );
-
-    if (startTime.getTime() <= Date.now()) {
-      throw new Error(
-        "Please select a future appointment time."
-      );
-    }
-
-    // Recheck availability while holding the lock.
-    if (calendar.getEvents(startTime, endTime).length > 0) {
-      throw new Error(
-        "Sorry, this appointment has just been booked. Please choose another time."
-      );
-    }
-
-    const customerName = `${firstName} ${lastName}`;
-
-    const description = [
-      `Customer: ${customerName}`,
-      `Email: ${email}`,
-      `Phone: ${phone}`,
-      `Reason: ${reason}`,
-      "",
-      `Message: ${message || "None provided"}`,
-      "",
-      "Booked through the SILAM Finance website."
-    ].join("\n");
-
-    const event = calendar.createEvent(
-      `SILAM Finance — ${customerName}`,
-      startTime,
-      endTime,
-      {
-        description: description,
-        guests: email,
-        sendInvites: true
-      }
-    );
-
-    return jsonResponse({
-      success: true,
-      message: "Appointment successfully booked.",
-      eventId: event.getId(),
-      appointment: `${data.isoDate} · ${data.time}`,
-      timezone: BUSINESS_TIMEZONE
-    });
-
-  } catch (error) {
-    console.error(error);
-
-    return jsonResponse({
-      success: false,
-      message: error.message ||
-        "Something went wrong while booking your appointment."
-    });
-
-  } finally {
-    if (lockAcquired) {
-      lock.releaseLock();
-    }
-  }
-}
-
-// Access the business calendar
-function getBookingCalendar() {
-  const calendar = CalendarApp.getCalendarById(CALENDAR_ID);
-
-  if (!calendar) {
-    throw new Error(
-      "SILAM Finance calendar could not be accessed. Check the calendar ID and permissions."
-    );
+    return;
   }
 
-  return calendar;
-}
+  configureDateInput();
 
-// Return available slots for a selected date
-function getAvailability(dateString) {
-  try {
-    if (!isValidDate(dateString)) {
-      throw new Error("Please provide a valid date in YYYY-MM-DD format.");
-    }
+  dateInput.addEventListener("change", () => {
+    loadAvailability(dateInput.value);
+  });
 
-    const calendar = getBookingCalendar();
-    const available = [];
+  form.addEventListener("submit", submitBooking);
 
-    BUSINESS_SLOTS.forEach(function(time) {
-      const startTime = parseAppointmentDate(dateString, time);
-
-      const endTime = new Date(
-        startTime.getTime() +
-        APPOINTMENT_DURATION_MINUTES * 60 * 1000
-      );
-
-      // Do not offer appointments in the past.
-      if (startTime.getTime() <= Date.now()) {
-        return;
-      }
-
-      // Any overlapping event makes the slot unavailable.
-      if (calendar.getEvents(startTime, endTime).length === 0) {
-        available.push(time);
-      }
-    });
-
-    return jsonResponse({
-      success: true,
-      date: dateString,
-      timezone: BUSINESS_TIMEZONE,
-      available: available
-    });
-
-  } catch (error) {
-    console.error(error);
-
-    return jsonResponse({
-      success: false,
-      message: error.message ||
-        "Unable to check availability."
-    });
+  // If a date is already selected, load its availability.
+  if (dateInput.value) {
+    loadAvailability(dateInput.value);
+  } else {
+    setTimeOptions([], "Choose a date first");
   }
-}
-
-// Parse either a JSON request or a standard form POST
-function getRequestData(e) {
-  if (!e) {
-    throw new Error("No booking data was received.");
-  }
-
-  if (
-    e.postData &&
-    e.postData.type &&
-    e.postData.type.toLowerCase().includes("application/json")
-  ) {
-    return JSON.parse(e.postData.contents || "{}");
-  }
-
-  return e.parameter || {};
-}
-
-// Validate that the date exists on the calendar
-function isValidDate(value) {
-  if (
-    typeof value !== "string" ||
-    !/^\d{4}-\d{2}-\d{2}$/.test(value)
-  ) {
-    return false;
-  }
-
-  const parts = value.split("-").map(Number);
-
-  const date = new Date(Date.UTC(
-    parts[0],
-    parts[1] - 1,
-    parts[2]
-  ));
-
-  return (
-    date.getUTCFullYear() === parts[0] &&
-    date.getUTCMonth() === parts[1] - 1 &&
-    date.getUTCDate() === parts[2]
-  );
-}
-
-// Parse using the IANA time zone, including Sydney DST rules.
-function parseAppointmentDate(dateString, timeString) {
-  if (!isValidDate(dateString)) {
-    throw new Error("Invalid appointment date.");
-  }
-
-  if (!BUSINESS_SLOTS.includes(timeString)) {
-    throw new Error("Invalid appointment time.");
-  }
-
-  const appointment = Utilities.parseDate(
-    `${dateString} ${timeString}`,
-    BUSINESS_TIMEZONE,
-    "yyyy-MM-dd h:mm a"
-  );
-
-  // Round-trip validation catches dates/times that do not
-  // parse back to the requested local calendar time.
-  const roundTrip = Utilities.formatDate(
-    appointment,
-    BUSINESS_TIMEZONE,
-    "yyyy-MM-dd h:mm a"
-  );
-
-  if (roundTrip !== `${dateString} ${timeString}`) {
-    throw new Error(
-      "This appointment time is invalid for the selected date."
-    );
-  }
-
-  return appointment;
-}
-
-// JSON output for the web app
-function jsonResponse(data) {
-  return ContentService
-    .createTextOutput(JSON.stringify(data))
-    .setMimeType(ContentService.MimeType.JSON);
-}
-
-// Run manually in Apps Script to test calendar access.
-function testCalendarAccess() {
-  const calendar = getBookingCalendar();
-
-  Logger.log("Calendar name: " + calendar.getName());
-  Logger.log("Calendar timezone: " + calendar.getTimeZone());
-
-  const testDate = new Date();
-  const events = calendar.getEventsForDay(testDate);
-
-  Logger.log("Events found today: " + events.length);
-}
+})();
