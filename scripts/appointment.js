@@ -1,9 +1,9 @@
+
 "use strict";
 
 const BOOKING_CONFIG = {
   endpoint: "https://script.google.com/macros/s/AKfycbyCipXv-ZtOY4QxQEh6ai7mrJ_GEWaDpejL9aeIzJhC4kTUzVuwwsl8dBwcVmMwHJ3Kdw/exec",
   timezone: "Australia/Sydney",
-  durationMinutes: 30,
   slots: [
     "9:00 AM",
     "9:30 AM",
@@ -13,167 +13,326 @@ const BOOKING_CONFIG = {
     "2:30 PM",
     "3:30 PM",
     "4:00 PM"
-  ]
+  ],
+  daysToShow: 7
 };
 
-(() => {
-  const form =
-    document.querySelector("#appointmentForm") ||
-    document.querySelector("#bookingForm");
+document.addEventListener("DOMContentLoaded", () => {
+  const $ = (selector) => document.querySelector(selector);
 
+  const form = $("#appointmentForm");
   if (!form) {
-    console.error(
-      "Appointment form not found. Add id='appointmentForm' to your form."
-    );
+    console.error("SILAM booking form was not found.");
     return;
   }
 
-  const dateInput =
-    form.querySelector('[name="isoDate"]') ||
-    form.querySelector("#appointmentDate") ||
-    form.querySelector("#bookingDate");
+  const dateStrip = $("#dateStrip");
+  const timeGrid = $("#timeGrid");
+  const monthLabel = $("#monthLabel");
+  const dateRangeLabel = $("#dateRangeLabel");
+  const selectedDateLabel = $("#selectedDateLabel");
+  const selectionSummary = $("#selectionSummary");
+  const detailsSlot = $("#detailsSlot");
+  const continueBtn = $("#continueBtn");
+  const backBtn = $("#backBtn");
+  const prevDays = $("#prevDays");
+  const nextDays = $("#nextDays");
+  const timeStep = $("#timeStep");
+  const detailsStep = $("#detailsStep");
+  const successStep = $("#successStep");
+  const liveAlert = $("#liveAlert");
+  const submitBtn = $("#submitBtn");
 
-  const timeSelect =
-    form.querySelector('[name="time"]') ||
-    form.querySelector("#appointmentTime") ||
-    form.querySelector("#bookingTime");
+  const progressTime = $("#progressTime");
+  const progressDetails = $("#progressDetails");
 
-  const submitButton =
-    form.querySelector('[type="submit"]');
-
-  const statusElement =
-    document.querySelector("#appointmentStatus") ||
-    document.querySelector("#bookingStatus") ||
-    document.querySelector("#formMessage");
-
+  let firstVisibleDate = null;
+  let selectedDate = "";
+  let selectedTime = "";
   let availabilityRequest = 0;
   let bookingInProgress = false;
+  let bookingFrame = null;
   let bookingTimeout = null;
 
-  // Set this to the deployed /exec URL in BOOKING_CONFIG.
-  function getEndpoint() {
-    const endpoint = BOOKING_CONFIG.endpoint.trim();
+  const availabilityCache = new Map();
 
-    if (
-      !endpoint.startsWith("https://script.google.com/") ||
-      !endpoint.endsWith("/exec")
-    ) {
-      throw new Error(
-        "Add your deployed Google Apps Script /exec URL to appointment.js."
-      );
-    }
+  function showMessage(message, type = "info") {
+    if (!liveAlert) return;
 
-    return endpoint;
+    liveAlert.textContent = message;
+    liveAlert.hidden = !message;
+    liveAlert.className = "booking-alert";
+
+    if (type === "error") liveAlert.classList.add("is-error");
+    if (type === "success") liveAlert.classList.add("is-success");
   }
 
-  function showStatus(message, type = "info") {
-    if (!statusElement) {
-      console.log(message);
-      return;
-    }
+  function getSydneyToday() {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: BOOKING_CONFIG.timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    }).formatToParts(new Date());
 
-    statusElement.textContent = message;
-    statusElement.setAttribute("role", "status");
-    statusElement.setAttribute("aria-live", "polite");
-
-    statusElement.classList.remove(
-      "success",
-      "error",
-      "info"
-    );
-    statusElement.classList.add(type);
-
-    statusElement.style.color =
-      type === "error" ? "#b42318" :
-      type === "success" ? "#237a57" :
-      "";
-  }
-
-  function setSubmitting(isSubmitting) {
-    if (submitButton) {
-      submitButton.disabled = isSubmitting;
-      submitButton.setAttribute(
-        "aria-busy",
-        String(isSubmitting)
-      );
-    }
-
-    if (isSubmitting) {
-      form.setAttribute("aria-busy", "true");
-    } else {
-      form.removeAttribute("aria-busy");
-    }
-  }
-
-  function localDateString(date) {
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, "0");
-    const day = String(date.getDate()).padStart(2, "0");
-
-    return `${year}-${month}-${day}`;
-  }
-
-  function configureDateInput() {
-    if (!dateInput) {
-      console.error("Appointment date input not found.");
-      return;
-    }
-
-    // Use the visitor's current date as a basic minimum.
-    // The backend independently validates the Sydney appointment time.
-    dateInput.min = localDateString(new Date());
-  }
-
-  function setTimeOptions(times, placeholder) {
-    if (!timeSelect) return;
-
-    timeSelect.replaceChildren();
-
-    timeSelect.add(new Option(placeholder, ""));
-
-    times.forEach((time) => {
-      if (BOOKING_CONFIG.slots.includes(time)) {
-        timeSelect.add(new Option(time, time));
-      }
+    const value = {};
+    parts.forEach((part) => {
+      value[part.type] = part.value;
     });
 
-    timeSelect.disabled = times.length === 0;
+    return `${value.year}-${value.month}-${value.day}`;
   }
 
-  // JSONP is used because a normal cross-origin fetch to Apps Script
-  // may fail due to redirects or CORS.
-  function loadAvailability(date) {
-    if (!dateInput || !timeSelect) return;
+  function parseDate(dateString) {
+    const [year, month, day] = dateString.split("-").map(Number);
+    return new Date(Date.UTC(year, month - 1, day, 12));
+  }
 
-    const requestId = ++availabilityRequest;
+  function dateString(date) {
+    return [
+      date.getUTCFullYear(),
+      String(date.getUTCMonth() + 1).padStart(2, "0"),
+      String(date.getUTCDate()).padStart(2, "0")
+    ].join("-");
+  }
 
-    if (!date) {
-      setTimeOptions([], "Choose a date first");
-      showStatus("");
+  function addDays(date, count) {
+    const result = parseDate(dateString(date));
+    result.setUTCDate(result.getUTCDate() + count);
+    return result;
+  }
+
+  function formatDate(date, options = {}) {
+    return new Intl.DateTimeFormat("en-AU", {
+      timeZone: "UTC",
+      ...options
+    }).format(date);
+  }
+
+  function dateIsBeforeToday(date) {
+    return date < getSydneyToday();
+  }
+
+  function formatSelectedSlot(date, time) {
+    if (!date || !time) return "Choose a date and time";
+
+    return `${formatDate(parseDate(date), {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      year: "numeric"
+    })} · ${time} Sydney time`;
+  }
+
+  function setBusy(busy) {
+    bookingInProgress = busy;
+
+    if (submitBtn) {
+      submitBtn.disabled = busy;
+
+      const label = submitBtn.querySelector(".btn-label");
+      const loading = submitBtn.querySelector(".btn-loading");
+
+      if (label) label.hidden = busy;
+      if (loading) loading.hidden = !busy;
+    }
+
+    if (continueBtn) continueBtn.disabled = busy || !selectedDate || !selectedTime;
+  }
+
+  function updateSelection() {
+    if (selectionSummary) {
+      selectionSummary.textContent =
+        selectedDate && selectedTime
+          ? formatSelectedSlot(selectedDate, selectedTime)
+          : "Choose a date and time";
+    }
+
+    if (selectedDateLabel) {
+      selectedDateLabel.textContent = selectedDate
+        ? formatDate(parseDate(selectedDate), {
+            weekday: "short",
+            day: "numeric",
+            month: "short"
+          })
+        : "Choose a date";
+    }
+
+    if (continueBtn) {
+      continueBtn.disabled = !selectedDate || !selectedTime || bookingInProgress;
+    }
+  }
+
+  function showStep(step) {
+    const choosingTime = step === "time";
+    const enteringDetails = step === "details";
+    const completed = step === "success";
+
+    if (timeStep) timeStep.classList.toggle("d-none", !choosingTime);
+    if (detailsStep) detailsStep.classList.toggle("d-none", !enteringDetails);
+    if (successStep) successStep.classList.toggle("d-none", !completed);
+
+    if (progressTime) {
+      progressTime.classList.toggle("is-active", choosingTime);
+      progressTime.classList.toggle("is-complete", enteringDetails || completed);
+    }
+
+    if (progressDetails) {
+      progressDetails.classList.toggle("is-active", enteringDetails);
+      progressDetails.classList.toggle("is-complete", completed);
+    }
+
+    showMessage("");
+
+    const target = $("#bookingSelection");
+    if (target && !completed) {
+      // No forced scrolling; preserve the current layout.
+    }
+  }
+
+  function renderDates() {
+    if (!dateStrip || !firstVisibleDate) return;
+
+    dateStrip.replaceChildren();
+
+    const today = getSydneyToday();
+    const visibleDates = [];
+
+    for (let i = 0; i < BOOKING_CONFIG.daysToShow; i++) {
+      const date = addDays(firstVisibleDate, i);
+      const iso = dateString(date);
+
+      if (iso < today) continue;
+
+      visibleDates.push({ date, iso });
+
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "date-option";
+      button.classList.toggle("is-selected", iso === selectedDate);
+      button.setAttribute("aria-pressed", String(iso === selectedDate));
+
+      const day = document.createElement("span");
+      day.className = "date-option-day";
+      day.textContent = formatDate(date, { weekday: "short" });
+
+      const number = document.createElement("strong");
+      number.className = "date-option-number";
+      number.textContent = formatDate(date, { day: "numeric" });
+
+      const month = document.createElement("span");
+      month.className = "date-option-month";
+      month.textContent = formatDate(date, { month: "short" });
+
+      button.append(day, number, month);
+
+      button.addEventListener("click", () => {
+        selectedDate = iso;
+        selectedTime = "";
+
+        renderDates();
+        updateSelection();
+        loadAvailability(iso);
+      });
+
+      dateStrip.appendChild(button);
+    }
+
+    if (visibleDates.length) {
+      const first = visibleDates[0].date;
+      const last = visibleDates[visibleDates.length - 1].date;
+
+      if (monthLabel) {
+        monthLabel.textContent = formatDate(first, {
+          month: "long",
+          year: "numeric"
+        });
+      }
+
+      if (dateRangeLabel) {
+        dateRangeLabel.textContent =
+          `${formatDate(first, { day: "numeric", month: "short" })} – ` +
+          `${formatDate(last, { day: "numeric", month: "short" })}`;
+      }
+    }
+
+    if (prevDays) {
+      prevDays.disabled = dateString(firstVisibleDate) <= today;
+    }
+  }
+
+  function renderTimes(times, loading = false) {
+    if (!timeGrid) return;
+
+    timeGrid.replaceChildren();
+
+    if (loading) {
+      const note = document.createElement("p");
+      note.className = "time-grid-message";
+      note.textContent = "Loading available times…";
+      timeGrid.appendChild(note);
       return;
     }
 
-    setTimeOptions([], "Loading available times...");
-    timeSelect.disabled = true;
+    if (!times.length) {
+      const note = document.createElement("p");
+      note.className = "time-grid-message";
+      note.textContent = selectedDate
+        ? "No appointments are available on this date. Try another date."
+        : "Choose a date to see available times.";
+      timeGrid.appendChild(note);
+      return;
+    }
 
-    showStatus("Checking available appointments...");
+    times.forEach((time) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "time-option";
+      button.textContent = time;
+      button.classList.toggle("is-selected", time === selectedTime);
+      button.setAttribute("aria-pressed", String(time === selectedTime));
 
-    let script;
-    let timeout;
+      button.addEventListener("click", () => {
+        selectedTime = time;
+        renderTimes(times);
+        updateSelection();
+        showMessage("");
+      });
+
+      timeGrid.appendChild(button);
+    });
+  }
+
+  function loadAvailability(date) {
+    const requestId = ++availabilityRequest;
+
+    selectedTime = "";
+    updateSelection();
+    renderTimes([], true);
+
+    if (!date || dateIsBeforeToday(date)) {
+      renderTimes([]);
+      return;
+    }
+
+    if (availabilityCache.has(date)) {
+      renderTimes(availabilityCache.get(date));
+      return;
+    }
 
     const callbackName =
       "__silamAvailability_" +
       Date.now() + "_" +
       Math.random().toString(36).slice(2);
 
+    let script = null;
+    let timeout = null;
     let finished = false;
 
     function cleanup() {
       if (finished) return;
       finished = true;
-
       clearTimeout(timeout);
-
       if (script) script.remove();
 
       try {
@@ -183,44 +342,42 @@ const BOOKING_CONFIG = {
       }
     }
 
-    window[callbackName] = function(result) {
+    function fail(message) {
+      cleanup();
+      if (requestId !== availabilityRequest) return;
+
+      renderTimes([]);
+      showMessage(message, "error");
+    }
+
+    window[callbackName] = (result) => {
       cleanup();
 
       if (requestId !== availabilityRequest) return;
 
-      if (!result || result.success !== true) {
-        setTimeOptions([], "Availability unavailable");
-        showStatus(
-          result && result.message
-            ? result.message
-            : "Could not retrieve availability.",
-          "error"
-        );
+      if (!result || result.success !== true || !Array.isArray(result.available)) {
+        fail(result && result.message
+          ? result.message
+          : "Availability could not be loaded.");
         return;
       }
 
-      const available = Array.isArray(result.available)
-        ? result.available.filter((time) =>
-            BOOKING_CONFIG.slots.includes(time)
-          )
-        : [];
+      const available = result.available.filter((time) =>
+        BOOKING_CONFIG.slots.includes(time)
+      );
 
-      if (available.length === 0) {
-        setTimeOptions([], "No times available");
-        showStatus(
-          "There are no available appointments on this date.",
-          "info"
-        );
-        return;
+      availabilityCache.set(date, available);
+      renderTimes(available);
+
+      if (!available.length) {
+        showMessage("No times are available on this date.");
+      } else {
+        showMessage("Select an available time.");
       }
-
-      setTimeOptions(available, "Select an appointment time");
-      showStatus("Choose an available appointment time.");
     };
 
     try {
-      const url = new URL(getEndpoint());
-
+      const url = new URL(BOOKING_CONFIG.endpoint);
       url.searchParams.set("action", "availability");
       url.searchParams.set("date", date);
       url.searchParams.set("callback", callbackName);
@@ -229,253 +386,205 @@ const BOOKING_CONFIG = {
       script.src = url.toString();
       script.async = true;
 
-      script.onerror = function() {
-        cleanup();
-
-        if (requestId !== availabilityRequest) return;
-
-        setTimeOptions([], "Unable to load times");
-
-        showStatus(
-          "Availability could not be loaded. Check your Apps Script deployment and JSONP setup.",
-          "error"
-        );
-      };
-
-      timeout = setTimeout(() => {
-        cleanup();
-
-        if (requestId !== availabilityRequest) return;
-
-        setTimeOptions([], "Request timed out");
-
-        showStatus(
-          "The availability request timed out. Please try again.",
-          "error"
-        );
-      }, 15000);
-
-      document.head.appendChild(script);
-
-    } catch (error) {
-      cleanup();
-      setTimeOptions([], "Unable to load times");
-      showStatus(error.message, "error");
-    }
-  }
-
-  // Receive the result returned by the Apps Script HTML response.
-  function handleBookingMessage(event) {
-    if (!bookingInProgress) return;
-
-    if (
-      !bookingFrame ||
-      event.source !== bookingFrame.contentWindow
-    ) {
-      return;
-    }
-
-    if (
-      !event.data ||
-      event.data.type !== "silam-booking-result"
-    ) {
-      return;
-    }
-
-    clearTimeout(bookingTimeout);
-    bookingInProgress = false;
-    setSubmitting(false);
-
-    const result = event.data.payload;
-
-    if (result && result.success === true) {
-      showStatus(
-        "Your appointment has been booked successfully. Please check your email for the invitation.",
-        "success"
+      script.onerror = () => fail(
+        "Could not connect to Google Calendar. Check the Apps Script JSONP deployment."
       );
 
-      form.reset();
-      configureDateInput();
-      setTimeOptions([], "Choose a date first");
+      timeout = setTimeout(() => fail(
+        "Availability request timed out. Please try again."
+      ), 15000);
 
-      return;
-    }
-
-    showStatus(
-      result && result.message
-        ? result.message
-        : "Your appointment could not be confirmed. Check your calendar before trying again.",
-      "error"
-    );
-
-    if (dateInput && dateInput.value) {
-      loadAvailability(dateInput.value);
+      document.head.appendChild(script);
+    } catch (error) {
+      fail(error.message || "Could not load availability.");
     }
   }
 
-  let bookingFrame = null;
+  function moveDays(direction) {
+    firstVisibleDate = addDays(firstVisibleDate, direction * BOOKING_CONFIG.daysToShow);
+
+    const today = getSydneyToday();
+
+    if (dateString(firstVisibleDate) < today) {
+      firstVisibleDate = parseDate(today);
+    }
+
+    renderDates();
+
+    // Preserve the selection only if it is still in the visible range.
+    const start = dateString(firstVisibleDate);
+    const end = dateString(addDays(firstVisibleDate, BOOKING_CONFIG.daysToShow - 1));
+
+    if (selectedDate && (selectedDate < start || selectedDate > end)) {
+      selectedDate = "";
+      selectedTime = "";
+      renderTimes([]);
+      updateSelection();
+    }
+  }
+
+  if (prevDays) {
+    prevDays.addEventListener("click", () => moveDays(-1));
+  }
+
+  if (nextDays) {
+    nextDays.addEventListener("click", () => moveDays(1));
+  }
+
+  if (continueBtn) {
+    continueBtn.addEventListener("click", () => {
+      if (!selectedDate || !selectedTime) {
+        showMessage("Please choose a date and time first.", "error");
+        return;
+      }
+
+      if (detailsSlot) {
+        detailsSlot.textContent = formatSelectedSlot(selectedDate, selectedTime);
+      }
+
+      showStep("details");
+    });
+  }
+
+  if (backBtn) {
+    backBtn.addEventListener("click", () => showStep("time"));
+  }
 
   function createBookingFrame() {
     bookingFrame = document.createElement("iframe");
-    bookingFrame.name =
-      "silamBookingFrame_" + Math.random().toString(36).slice(2);
-
+    bookingFrame.name = "silamBookingFrame_" + Math.random().toString(36).slice(2);
     bookingFrame.title = "Appointment booking response";
     bookingFrame.hidden = true;
-
     document.body.appendChild(bookingFrame);
 
-    window.addEventListener("message", handleBookingMessage);
+    window.addEventListener("message", (event) => {
+      if (!bookingFrame || event.source !== bookingFrame.contentWindow) return;
+      if (!event.data || event.data.type !== "silam-booking-result") return;
+      if (!bookingInProgress) return;
+
+      clearTimeout(bookingTimeout);
+      setBusy(false);
+
+      const result = event.data.payload;
+
+      if (result && result.success === true) {
+        if ($("#successSlot")) {
+          $("#successSlot").textContent = formatSelectedSlot(selectedDate, selectedTime);
+        }
+
+        if ($("#successMessage")) {
+          $("#successMessage").textContent =
+            "Your consultation has been booked. Please check your email for the calendar invitation.";
+        }
+
+        if ($("#confirmationCode")) {
+          $("#confirmationCode").textContent =
+            result.eventId ? "Booking reference: " + result.eventId : "";
+        }
+
+        showStep("success");
+        availabilityCache.delete(selectedDate);
+        return;
+      }
+
+      showStep("details");
+      showMessage(
+        result && result.message
+          ? result.message
+          : "The booking could not be confirmed. Check your calendar before trying again.",
+        "error"
+      );
+
+      availabilityCache.delete(selectedDate);
+      loadAvailability(selectedDate);
+    });
   }
 
-  function submitBooking(event) {
+  form.addEventListener("submit", (event) => {
     event.preventDefault();
 
     if (bookingInProgress) return;
 
+    if (!selectedDate || !selectedTime) {
+      showStep("time");
+      showMessage("Please select an available appointment time.", "error");
+      return;
+    }
+
+    const firstName = $("#firstName");
+    const lastName = $("#lastName");
+    const email = $("#email");
+    const phone = $("#phone");
+    const reason = $("#reason");
+    const message = $("#message");
+    const consent = $("#consent");
+
     if (!form.reportValidity()) return;
 
-    if (!dateInput || !timeSelect || !timeSelect.value) {
-      showStatus(
-        "Please select an available appointment date and time.",
-        "error"
-      );
+    if (consent && !consent.checked) {
+      showMessage("Please confirm the consultation consent before continuing.", "error");
+      consent.focus();
       return;
     }
 
-    if (!BOOKING_CONFIG.slots.includes(timeSelect.value)) {
-      showStatus("Please choose a valid appointment time.", "error");
-      return;
-    }
-
-    let endpoint;
-
-    try {
-      endpoint = getEndpoint();
-    } catch (error) {
-      showStatus(error.message, "error");
-      return;
-    }
-
-    const formData = new FormData(form);
-    const values = {};
-
-    [
-      "firstName",
-      "lastName",
-      "email",
-      "phone",
-      "reason",
-      "message"
-    ].forEach((key) => {
-      const value = formData.get(key);
-      values[key] = value == null ? "" : String(value).trim();
-    });
-
-    values.isoDate = dateInput.value;
-    values.time = timeSelect.value;
-
-    const required = [
-      "firstName",
-      "lastName",
-      "email",
-      "phone",
-      "reason",
-      "isoDate",
-      "time"
-    ];
-
-    if (required.some((key) => !values[key])) {
-      showStatus("Please complete all required fields.", "error");
-      return;
-    }
-
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(values.email)) {
-      showStatus("Please enter a valid email address.", "error");
-      return;
-    }
+    const values = {
+      firstName: firstName.value.trim(),
+      lastName: lastName.value.trim(),
+      email: email.value.trim(),
+      phone: phone.value.trim(),
+      reason: reason.value.trim(),
+      message: message ? message.value.trim() : "",
+      isoDate: selectedDate,
+      time: selectedTime,
+      _iframe: "1"
+    };
 
     if (!bookingFrame) createBookingFrame();
 
     const hiddenForm = document.createElement("form");
-
     hiddenForm.method = "POST";
-    hiddenForm.action = endpoint;
+    hiddenForm.action = BOOKING_CONFIG.endpoint;
     hiddenForm.target = bookingFrame.name;
     hiddenForm.hidden = true;
 
-    const payload = {
-      ...values,
-      _iframe: "1"
-    };
-
-    Object.entries(payload).forEach(([name, value]) => {
+    Object.entries(values).forEach(([name, value]) => {
       const input = document.createElement("input");
-
       input.type = "hidden";
       input.name = name;
       input.value = value;
-
       hiddenForm.appendChild(input);
     });
 
     document.body.appendChild(hiddenForm);
 
-    bookingInProgress = true;
-    setSubmitting(true);
-
-    showStatus("Submitting your appointment request...");
+    setBusy(true);
+    showMessage("Submitting your appointment request…");
 
     bookingTimeout = setTimeout(() => {
       if (!bookingInProgress) return;
 
-      bookingInProgress = false;
-      setSubmitting(false);
-
-      showStatus(
-        "We couldn't confirm the booking response. Check Google Calendar before attempting to book again.",
+      setBusy(false);
+      showMessage(
+        "We couldn't confirm the response. Check Google Calendar before trying to book again.",
         "error"
       );
-
-      hiddenForm.remove();
     }, 30000);
 
     try {
       hiddenForm.submit();
     } catch (error) {
       clearTimeout(bookingTimeout);
-      bookingInProgress = false;
-      setSubmitting(false);
-
-      showStatus(
-        "Unable to submit the appointment. Please try again.",
-        "error"
-      );
+      setBusy(false);
+      showMessage("Unable to submit your booking. Please try again.", "error");
     }
 
-    // Keep the temporary form briefly for browser compatibility.
     setTimeout(() => hiddenForm.remove(), 1000);
-  }
-
-  if (!dateInput || !timeSelect) {
-    console.error(
-      "Please add a date input and time select with names isoDate and time."
-    );
-    return;
-  }
-
-  configureDateInput();
-
-  dateInput.addEventListener("change", () => {
-    loadAvailability(dateInput.value);
   });
 
-  form.addEventListener("submit", submitBooking);
-
-  // If a date is already selected, load its availability.
-  if (dateInput.value) {
-    loadAvailability(dateInput.value);
-  } else {
-    setTimeOptions([], "Choose a date first");
-  }
-})();
+  // Initialise the custom calendar.
+  firstVisibleDate = parseDate(getSydneyToday());
+  renderDates();
+  renderTimes([]);
+  updateSelection();
+  showStep("time");
+});
