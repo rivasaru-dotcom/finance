@@ -2,7 +2,7 @@
 "use strict";
 
 const BOOKING_CONFIG = {
-  endpoint: "https://script.google.com/macros/s/AKfycbyCipXv-ZtOY4QxQEh6ai7mrJ_GEWaDpejL9aeIzJhC4kTUzVuwwsl8dBwcVmMwHJ3Kdw/exec",
+  endpoint: "https://script.google.com/macros/s/AKfycbyGbPBSSPSA4JGpVUaAtskTa-qYmFm5q1D3AeBX6iXAhVE36LUJoOrqC7PP1nCNEfujqA/exec",
   timezone: "Australia/Sydney",
   slots: [
     "9:00 AM",
