@@ -1,262 +1,322 @@
-(() => {
 "use strict";
 
-const BOOKING_ENDPOINT = "https://script.google.com/macros/s/AKfycbwL4HJ5xjXNOauT0kZayvvMcMxxLQZ3Vv_ir2_JJw442NuDDBYHTM13ONEHNTsY6rGlOA/exec";
-const TIMEZONE = "Australia/Sydney";
+const CALENDAR_ID =
+  "2bbe82282fdfe19aac198e1b42ee6237c02663bd3c6cf37ea77bab8c01d8cdcb@group.calendar.google.com";
+
+const BUSINESS_TIMEZONE = "Australia/Sydney";
+const APPOINTMENT_DURATION_MINUTES = 30;
 
 const BUSINESS_SLOTS = [
-  "9:00 AM","9:30 AM","10:30 AM","11:00 AM",
-  "1:00 PM","2:30 PM","3:30 PM","4:00 PM"
+  "9:00 AM",
+  "9:30 AM",
+  "10:30 AM",
+  "11:00 AM",
+  "1:00 PM",
+  "2:30 PM",
+  "3:30 PM",
+  "4:00 PM"
 ];
-let availableTimes = [];
 
-const $ = id => document.getElementById(id);
-const els = {
-  form:$("appointmentForm"), timeStep:$("timeStep"), detailsStep:$("detailsStep"), successStep:$("successStep"),
-  dateStrip:$("dateStrip"), timeGrid:$("timeGrid"), monthLabel:$("monthLabel"), dateRangeLabel:$("dateRangeLabel"),
-  selectedDateLabel:$("selectedDateLabel"), selectionSummary:$("selectionSummary"), detailsSlot:$("detailsSlot"),
-  successSlot:$("successSlot"), successMessage:$("successMessage"), confirmationCode:$("confirmationCode"),
-  continueBtn:$("continueBtn"), backBtn:$("backBtn"), submitBtn:$("submitBtn"), btnLabel:document.querySelector(".btn-label"),
-  btnLoading:document.querySelector(".btn-loading"), liveAlert:$("liveAlert"), progressTime:$("progressTime"),
-  progressDetails:$("progressDetails"), prevDays:$("prevDays"), nextDays:$("nextDays"), year:$("year")
-};
+// GET: health check and availability
+function doGet(e) {
+  const params = e && e.parameter ? e.parameter : {};
 
-let windowStart = startOfSydneyToday();
-let visibleDates = [];
-let selectedDate = null;
-let selectedTime = null;
-
-function fmt(options) {
-  return new Intl.DateTimeFormat("en-AU", {timeZone:TIMEZONE, ...options});
-}
-
-function startOfSydneyToday() {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone:TIMEZONE, year:"numeric", month:"2-digit", day:"2-digit"
-  }).formatToParts(new Date());
-  const v = Object.fromEntries(parts.map(p => [p.type,p.value]));
-  return new Date(`${v.year}-${v.month}-${v.day}T00:00:00`);
-}
-
-function addDays(date, n) {
-  const d = new Date(date);
-  d.setDate(d.getDate()+n);
-  return d;
-}
-
-function isoDate(date) {
-  return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`;
-}
-
-function isWeekday(date) {
-  return date.getDay() !== 0 && date.getDay() !== 6;
-}
-
-function nextWeekdays(start, count) {
-  const out = [];
-  let d = new Date(start);
-  while(out.length < count) {
-    if(isWeekday(d)) out.push(new Date(d));
-    d = addDays(d,1);
+  if (params.action === "availability") {
+    return getAvailability(params.date || "");
   }
-  return out;
-}
 
-function longDate(date) {
-  return fmt({weekday:"long",day:"numeric",month:"long"}).format(date);
-}
-
-function parts(date) {
-  const p = fmt({weekday:"short",day:"numeric",month:"short"}).formatToParts(date);
-  const m = Object.fromEntries(p.map(x => [x.type,x.value]));
-  return {weekday:m.weekday.toUpperCase(),day:m.day,month:m.month};
-}
-
-function renderDates() {
-  visibleDates = nextWeekdays(windowStart,5);
-  els.dateStrip.innerHTML = "";
-
-  visibleDates.forEach(date => {
-    const p = parts(date);
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = "date-option";
-    b.dataset.date = isoDate(date);
-    b.innerHTML = `<span>${p.weekday}</span><strong>${p.day}</strong><small>${p.month}</small>`;
-    if(selectedDate && isoDate(selectedDate) === isoDate(date)) b.classList.add("selected");
-    b.addEventListener("click", () => {
-      selectedDate = new Date(date);
-      selectedTime = null;
-      renderDates();
-      renderTimes();
-      updateSelection();
-    });
-    els.dateStrip.appendChild(b);
-  });
-
-  const first = visibleDates[0], last = visibleDates[4];
-  els.monthLabel.textContent = new Intl.DateTimeFormat("en-AU",{month:"long",year:"numeric",timeZone:TIMEZONE}).format(first);
-  els.dateRangeLabel.textContent = `${parts(first).day} ${parts(first).month} – ${parts(last).day} ${parts(last).month}`;
-  els.prevDays.disabled = windowStart <= startOfSydneyToday();
-}
-
-function renderTimes() {
-  els.timeGrid.innerHTML = "";
-  if(!selectedDate) {
-    els.selectedDateLabel.textContent = "Choose a date";
-    return;
-  }
-  els.selectedDateLabel.textContent = longDate(selectedDate);
-
-  BUSINESS_SLOTS.forEach(time => {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = "time-option";
-    b.textContent = time;
-    if(selectedTime === time) b.classList.add("selected");
-    b.addEventListener("click", () => {
-      selectedTime = time;
-      renderTimes();
-      updateSelection();
-    });
-    els.timeGrid.appendChild(b);
+  return jsonResponse({
+    success: true,
+    message: "SILAM Finance booking service is running."
   });
 }
 
-function updateSelection() {
-  const ready = selectedDate && selectedTime;
-  if(!ready) {
-    els.selectionSummary.textContent = "Choose a date and time";
-    els.detailsSlot.textContent = "—";
-    els.continueBtn.disabled = true;
-    return;
-  }
-  const text = `${longDate(selectedDate)} · ${selectedTime}`;
-  els.selectionSummary.textContent = text;
-  els.detailsSlot.textContent = text;
-  els.continueBtn.disabled = false;
-}
-
-function alertBox(message,type="error") {
-  els.liveAlert.hidden = false;
-  els.liveAlert.className = `booking-alert ${type}`;
-  els.liveAlert.textContent = message;
-}
-
-function hideAlert() {
-  els.liveAlert.hidden = true;
-  els.liveAlert.textContent = "";
-}
-
-function goDetails() {
-  if(!selectedDate || !selectedTime) return;
-  hideAlert();
-  els.timeStep.classList.add("d-none");
-  els.detailsStep.classList.remove("d-none");
-  els.progressTime.classList.remove("is-active");
-  els.progressDetails.classList.add("is-active");
-  $("firstName").focus();
-}
-
-function goTime() {
-  hideAlert();
-  els.detailsStep.classList.add("d-none");
-  els.timeStep.classList.remove("d-none");
-  els.progressDetails.classList.remove("is-active");
-  els.progressTime.classList.add("is-active");
-}
-
-function setLoading(loading) {
-  els.submitBtn.disabled = loading;
-  els.btnLabel.hidden = loading;
-  els.btnLoading.hidden = !loading;
-}
-
-async function submitBooking(e) {
-  e.preventDefault();
-  hideAlert();
-
-  if(!selectedDate || !selectedTime) {
-    goTime();
-    alertBox("Please choose an appointment date and time.");
-    return;
-  }
-
-  if(!els.form.checkValidity()) {
-    els.form.classList.add("was-validated");
-    alertBox("Please complete the required fields.");
-    return;
-  }
-
-  setLoading(true);
-
-  const data = new URLSearchParams();
-  ["firstName","lastName","email","phone","reason","message"].forEach(id => {
-    data.set(id, $(id).value.trim());
-  });
-  data.set("date", longDate(selectedDate));
-  data.set("time", selectedTime);
-  data.set("isoDate", isoDate(selectedDate));
-  data.set("timezone", TIMEZONE);
+// POST: create a booking
+function doPost(e) {
+  const lock = LockService.getScriptLock();
+  let lockAcquired = false;
 
   try {
-    const response = await fetch(BOOKING_ENDPOINT, {
-      method:"POST",
-      body:data,
-      redirect:"follow"
+    const data = getRequestData(e);
+
+    const requiredFields = [
+      "firstName",
+      "lastName",
+      "email",
+      "phone",
+      "isoDate",
+      "time",
+      "reason"
+    ];
+
+    for (const field of requiredFields) {
+      if (
+        typeof data[field] !== "string" ||
+        !data[field].trim()
+      ) {
+        throw new Error("Please complete all required fields.");
+      }
+    }
+
+    const firstName = data.firstName.trim();
+    const lastName = data.lastName.trim();
+    const email = data.email.trim().toLowerCase();
+    const phone = data.phone.trim();
+    const reason = data.reason.trim();
+    const message = String(data.message || "").trim();
+
+    if (
+      firstName.length > 100 ||
+      lastName.length > 100 ||
+      phone.length > 40 ||
+      reason.length > 200 ||
+      message.length > 1000
+    ) {
+      throw new Error("One or more fields exceed the allowed length.");
+    }
+
+    if (
+      email.length > 254 ||
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+    ) {
+      throw new Error("Please enter a valid email address.");
+    }
+
+    if (!BUSINESS_SLOTS.includes(data.time)) {
+      throw new Error("Please select a valid appointment time.");
+    }
+
+    const calendar = getBookingCalendar();
+
+    if (!lock.tryLock(15000)) {
+      throw new Error(
+        "The booking service is busy. Please try again shortly."
+      );
+    }
+
+    lockAcquired = true;
+
+    const startTime = parseAppointmentDate(
+      data.isoDate,
+      data.time
+    );
+
+    const endTime = new Date(
+      startTime.getTime() +
+      APPOINTMENT_DURATION_MINUTES * 60 * 1000
+    );
+
+    if (startTime.getTime() <= Date.now()) {
+      throw new Error(
+        "Please select a future appointment time."
+      );
+    }
+
+    // Recheck availability while holding the lock.
+    if (calendar.getEvents(startTime, endTime).length > 0) {
+      throw new Error(
+        "Sorry, this appointment has just been booked. Please choose another time."
+      );
+    }
+
+    const customerName = `${firstName} ${lastName}`;
+
+    const description = [
+      `Customer: ${customerName}`,
+      `Email: ${email}`,
+      `Phone: ${phone}`,
+      `Reason: ${reason}`,
+      "",
+      `Message: ${message || "None provided"}`,
+      "",
+      "Booked through the SILAM Finance website."
+    ].join("\n");
+
+    const event = calendar.createEvent(
+      `SILAM Finance — ${customerName}`,
+      startTime,
+      endTime,
+      {
+        description: description,
+        guests: email,
+        sendInvites: true
+      }
+    );
+
+    return jsonResponse({
+      success: true,
+      message: "Appointment successfully booked.",
+      eventId: event.getId(),
+      appointment: `${data.isoDate} · ${data.time}`,
+      timezone: BUSINESS_TIMEZONE
     });
-    const text = await response.text();
 
-    let result = null;
-    try { result = JSON.parse(text); } catch (_) {
-      const match = text.match(/postMessage\(\s*(\{[\s\S]*?\})\s*,/);
-      if(match) { try { result = JSON.parse(match[1]); } catch (_) {} }
-    }
+  } catch (error) {
+    console.error(error);
 
-    if(!result) throw new Error("Unexpected booking response.");
+    return jsonResponse({
+      success: false,
+      message: error.message ||
+        "Something went wrong while booking your appointment."
+    });
 
-    if(!result.success) {
-      alertBox(result.message || "That time is no longer available.");
-      return;
-    }
-
-    els.detailsStep.classList.add("d-none");
-    els.successStep.classList.remove("d-none");
-    els.successSlot.textContent = `${longDate(selectedDate)} · ${selectedTime}`;
-    const firstName = $("firstName").value.trim();
-    els.successMessage.textContent = `Thanks${firstName ? `, ${firstName}` : ""}. Your consultation has been booked and a confirmation has been sent to your email.`;
-    els.confirmationCode.textContent = result.confirmation ? `Confirmation: ${result.confirmation}` : "";
-    window.scrollTo({top:0,behavior:"smooth"});
-  } catch(err) {
-    console.error(err);
-    alertBox("We couldn't complete the booking right now. Please try again or contact SILAM Finance.");
   } finally {
-    setLoading(false);
+    if (lockAcquired) {
+      lock.releaseLock();
+    }
   }
 }
 
-els.prevDays.addEventListener("click", () => {
-  const today = startOfSydneyToday();
-  const candidate = addDays(windowStart,-5);
-  windowStart = candidate < today ? today : candidate;
-  selectedDate = null; selectedTime = null;
-  renderDates(); renderTimes(); updateSelection();
-});
+// Access the business calendar
+function getBookingCalendar() {
+  const calendar = CalendarApp.getCalendarById(CALENDAR_ID);
 
-els.nextDays.addEventListener("click", () => {
-  windowStart = addDays(windowStart,5);
-  selectedDate = null; selectedTime = null;
-  renderDates(); renderTimes(); updateSelection();
-});
+  if (!calendar) {
+    throw new Error(
+      "SILAM Finance calendar could not be accessed. Check the calendar ID and permissions."
+    );
+  }
 
-els.continueBtn.addEventListener("click",goDetails);
-els.backBtn.addEventListener("click",goTime);
-els.form.addEventListener("submit",submitBooking);
-els.year.textContent = new Date().getFullYear();
+  return calendar;
+}
 
-renderDates();
-selectedDate = visibleDates[0];
-renderDates();
-renderTimes();
-updateSelection();
-})();
+// Return available slots for a selected date
+function getAvailability(dateString) {
+  try {
+    if (!isValidDate(dateString)) {
+      throw new Error("Please provide a valid date in YYYY-MM-DD format.");
+    }
+
+    const calendar = getBookingCalendar();
+    const available = [];
+
+    BUSINESS_SLOTS.forEach(function(time) {
+      const startTime = parseAppointmentDate(dateString, time);
+
+      const endTime = new Date(
+        startTime.getTime() +
+        APPOINTMENT_DURATION_MINUTES * 60 * 1000
+      );
+
+      // Do not offer appointments in the past.
+      if (startTime.getTime() <= Date.now()) {
+        return;
+      }
+
+      // Any overlapping event makes the slot unavailable.
+      if (calendar.getEvents(startTime, endTime).length === 0) {
+        available.push(time);
+      }
+    });
+
+    return jsonResponse({
+      success: true,
+      date: dateString,
+      timezone: BUSINESS_TIMEZONE,
+      available: available
+    });
+
+  } catch (error) {
+    console.error(error);
+
+    return jsonResponse({
+      success: false,
+      message: error.message ||
+        "Unable to check availability."
+    });
+  }
+}
+
+// Parse either a JSON request or a standard form POST
+function getRequestData(e) {
+  if (!e) {
+    throw new Error("No booking data was received.");
+  }
+
+  if (
+    e.postData &&
+    e.postData.type &&
+    e.postData.type.toLowerCase().includes("application/json")
+  ) {
+    return JSON.parse(e.postData.contents || "{}");
+  }
+
+  return e.parameter || {};
+}
+
+// Validate that the date exists on the calendar
+function isValidDate(value) {
+  if (
+    typeof value !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(value)
+  ) {
+    return false;
+  }
+
+  const parts = value.split("-").map(Number);
+
+  const date = new Date(Date.UTC(
+    parts[0],
+    parts[1] - 1,
+    parts[2]
+  ));
+
+  return (
+    date.getUTCFullYear() === parts[0] &&
+    date.getUTCMonth() === parts[1] - 1 &&
+    date.getUTCDate() === parts[2]
+  );
+}
+
+// Parse using the IANA time zone, including Sydney DST rules.
+function parseAppointmentDate(dateString, timeString) {
+  if (!isValidDate(dateString)) {
+    throw new Error("Invalid appointment date.");
+  }
+
+  if (!BUSINESS_SLOTS.includes(timeString)) {
+    throw new Error("Invalid appointment time.");
+  }
+
+  const appointment = Utilities.parseDate(
+    `${dateString} ${timeString}`,
+    BUSINESS_TIMEZONE,
+    "yyyy-MM-dd h:mm a"
+  );
+
+  // Round-trip validation catches dates/times that do not
+  // parse back to the requested local calendar time.
+  const roundTrip = Utilities.formatDate(
+    appointment,
+    BUSINESS_TIMEZONE,
+    "yyyy-MM-dd h:mm a"
+  );
+
+  if (roundTrip !== `${dateString} ${timeString}`) {
+    throw new Error(
+      "This appointment time is invalid for the selected date."
+    );
+  }
+
+  return appointment;
+}
+
+// JSON output for the web app
+function jsonResponse(data) {
+  return ContentService
+    .createTextOutput(JSON.stringify(data))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+// Run manually in Apps Script to test calendar access.
+function testCalendarAccess() {
+  const calendar = getBookingCalendar();
+
+  Logger.log("Calendar name: " + calendar.getName());
+  Logger.log("Calendar timezone: " + calendar.getTimeZone());
+
+  const testDate = new Date();
+  const events = calendar.getEventsForDay(testDate);
+
+  Logger.log("Events found today: " + events.length);
+}
