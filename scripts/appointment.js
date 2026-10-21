@@ -1,25 +1,24 @@
-
 "use strict";
 
 const BOOKING_CONFIG = {
   endpoint: "https://script.google.com/macros/s/AKfycbyGbPBSSPSA4JGpVUaAtskTa-qYmFm5q1D3AeBX6iXAhVE36LUJoOrqC7PP1nCNEfujqA/exec",
   timezone: "Australia/Sydney",
   slots: [
-      "9:00 AM",
-  "9:30 AM",
-  "10:00 AM",
-  "10:30 AM",
-  "11:00 AM",
-  "11:30 AM",
-  "12:00 PM",
-  "12:30 PM",
-  "1:00 PM",
-  "1:30 PM",
-  "2:00 PM",
-  "2:30 PM",
-  "3:00 PM",
-  "3:30 PM",
-  "4:00 PM"
+    "9:00 AM",
+    "9:30 AM",
+    "10:00 AM",
+    "10:30 AM",
+    "11:00 AM",
+    "11:30 AM",
+    "12:00 PM",
+    "12:30 PM",
+    "1:00 PM",
+    "1:30 PM",
+    "2:00 PM",
+    "2:30 PM",
+    "3:00 PM",
+    "3:30 PM",
+    "4:00 PM"
   ],
   daysToShow: 7
 };
@@ -60,6 +59,7 @@ document.addEventListener("DOMContentLoaded", () => {
   let bookingInProgress = false;
   let bookingFrame = null;
   let bookingTimeout = null;
+  let cleanupHiddenForm = null;
 
   const availabilityCache = new Map();
 
@@ -144,7 +144,12 @@ document.addEventListener("DOMContentLoaded", () => {
       if (loading) loading.hidden = !busy;
     }
 
-    if (continueBtn) continueBtn.disabled = busy || !selectedDate || !selectedTime;
+    if (continueBtn) {
+      const onDetailsStep =
+        detailsStep && !detailsStep.classList.contains("d-none");
+      continueBtn.disabled =
+        busy || onDetailsStep || !selectedDate || !selectedTime;
+    }
   }
 
   function updateSelection() {
@@ -166,7 +171,10 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     if (continueBtn) {
-      continueBtn.disabled = !selectedDate || !selectedTime || bookingInProgress;
+      const onDetailsStep =
+        detailsStep && !detailsStep.classList.contains("d-none");
+      continueBtn.disabled =
+        !selectedDate || !selectedTime || bookingInProgress || onDetailsStep;
     }
   }
 
@@ -190,11 +198,6 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     showMessage("");
-
-    const target = $("#bookingSelection");
-    if (target && !completed) {
-      // No forced scrolling; preserve the current layout.
-    }
   }
 
   function renderDates() {
@@ -418,7 +421,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
     renderDates();
 
-    // Preserve the selection only if it is still in the visible range.
     const start = dateString(firstVisibleDate);
     const end = dateString(addDays(firstVisibleDate, BOOKING_CONFIG.daysToShow - 1));
 
@@ -458,8 +460,11 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function createBookingFrame() {
+    if (bookingFrame) return;
+
     bookingFrame = document.createElement("iframe");
-    bookingFrame.name = "silamBookingFrame_" + Math.random().toString(36).slice(2);
+    bookingFrame.name =
+      "silamBookingFrame_" + Math.random().toString(36).slice(2);
     bookingFrame.title = "Appointment booking response";
     bookingFrame.hidden = true;
     document.body.appendChild(bookingFrame);
@@ -475,6 +480,8 @@ document.addEventListener("DOMContentLoaded", () => {
       const result = event.data.payload;
 
       if (result && result.success === true) {
+        if (cleanupHiddenForm) cleanupHiddenForm();
+
         if ($("#successSlot")) {
           $("#successSlot").textContent = formatSelectedSlot(selectedDate, selectedTime);
         }
@@ -493,6 +500,8 @@ document.addEventListener("DOMContentLoaded", () => {
         availabilityCache.delete(selectedDate);
         return;
       }
+
+      if (cleanupHiddenForm) cleanupHiddenForm();
 
       showStep("details");
       showMessage(
@@ -564,6 +573,17 @@ document.addEventListener("DOMContentLoaded", () => {
 
     document.body.appendChild(hiddenForm);
 
+    // Only remove the hidden form once the response has been received,
+    // otherwise the iframe navigation can be cancelled by the browser.
+    let cleanedUp = false;
+    cleanupHiddenForm = function () {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      clearTimeout(bookingTimeout);
+      try { hiddenForm.remove(); } catch (_) {}
+      cleanupHiddenForm = null;
+    };
+
     setBusy(true);
     showMessage("Submitting your appointment request…");
 
@@ -575,17 +595,17 @@ document.addEventListener("DOMContentLoaded", () => {
         "We couldn't confirm the response. Check Google Calendar before trying to book again.",
         "error"
       );
+
+      if (cleanupHiddenForm) cleanupHiddenForm();
     }, 30000);
 
     try {
       hiddenForm.submit();
     } catch (error) {
-      clearTimeout(bookingTimeout);
       setBusy(false);
       showMessage("Unable to submit your booking. Please try again.", "error");
+      if (cleanupHiddenForm) cleanupHiddenForm();
     }
-
-    setTimeout(() => hiddenForm.remove(), 1000);
   });
 
   // Initialise the custom calendar.
