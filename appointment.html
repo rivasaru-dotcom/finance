@@ -6,7 +6,7 @@
     <meta name="description" content="Book a free consultation with SILAM Finance. Choose an available time and tell us how we can help.">
     <title>Book a Free Chat | SILAM Finance</title>
     <link rel="icon" type="image/jpeg" href="Images/logo.jpeg">
-    <link rel="apple-touch-icon" href="title.png">
+    <link rel="apple-touch-icon" href="Images/logo.jpeg">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -118,11 +118,14 @@
                                     <div class="col-12"><label for="reason">What can we help with?</label>
                                         <select id="reason" name="reason" class="form-select" required>
                                             <option value="" selected disabled>Select an option</option>
-                                            <option>Buying my first home</option><option>Buying another home</option>
-                                            <option>Refinancing</option><option>Investment lending</option>
-                                            <option>Construction lending</option>
-                                            <option>Commercial lending</option>
-                                            <option>I'm not sure yet</option></select>
+                                            <option value="Buying my first home">Buying my first home</option>
+                                            <option value="Buying another home">Buying another home</option>
+                                            <option value="Refinancing">Refinancing</option>
+                                            <option value="Investment lending">Investment lending</option>
+                                            <option value="Construction lending">Construction lending</option>
+                                            <option value="Commercial lending">Commercial lending</option>
+                                            <option value="I'm not sure yet">I'm not sure yet</option>
+                                        </select>
                                         </div>
                                     <div class="col-12"><label for="message">Anything you'd like us to know? <span>Optional</span></label>
                                         <textarea id="message" name="message" class="form-control" rows="4" placeholder="For example, tell us where you are in the process or what you'd like to discuss."></textarea>
@@ -147,7 +150,7 @@
                                 </i><strong id="successSlot">—</strong>
                             </div>
                             <p class="confirmation-code" id="confirmationCode"></p>
-                            <a href="home.html" class="text-link">Back to SILAM Finance <i class="bi bi-arrow-right"></i></a>
+                            <a href="index.html" class="text-link">Back to SILAM Finance <i class="bi bi-arrow-right"></i></a>
                         </div>
                     </form>
                 </section>
@@ -205,7 +208,7 @@
     <h4>Important information</h4>
     <p>Australian Credit Representative No. 581009</p>
     <p>Authorised Credit Representative of Purple Circle Service Pty Ltd (Australian Credit Licence No. 486112)</p>
-    <p>Information provided on this website is general in nature and does not take into account your personal objectives, financial situation or needs. Lending criteria, rates, fees,charges and conditions apply and may change. All applications are subject to lender assessment and approval.</p>
+    <p>Information provided on this website is general in nature and does not take into account your personal objectives, financial situation or needs. Lending criteria, rates, fees, charges and conditions apply and may change. All applications are subject to lender assessment and approval.</p>
     <p>Before making a decision, consider whether the information is appropriate for your circumstances and seek independent professional, financial or legal advice where appropriate.</p>
 </div>
 <div class="footer-bottom">
@@ -219,9 +222,7 @@
 </div>
 </div>
 </footer>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js">
-    </script>
-    <script src="scripts/appointment.js">
-    </script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="scripts/appointment.js"></script>
 </body>
 </html>
